@@ -1,0 +1,94 @@
+name: CI & Auto-Issue / Codex Fix
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      autorizar_push_correcao:
+        description: "Autorizar Codex a criar branch e fazer git push da correcao?"
+        required: false
+        default: "false" 
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  lint-and-test:
+    name: Python 3.12 (Ruff, Pytest & Auto-Triage)
+    if: "!startsWith(github.head_ref, 'fix/auto-')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip ruff pytest
+
+      - name: Run Ruff & Pytest (capture failure log)
+        id: verify
+        run: |
+          set -o pipefail
+          {
+            ruff check . --select E9,F63,F7,F82
+            pytest -q --tb=line --show-capture=no
+          } 2>&1 | tee ci_error.log
+
+      - name: Open GitHub Issue automatically on failure
+        if: failure() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "### Log do erro no GitHub Actions (Sanitizado)"
+            echo '~~~text'
+            tail -n 80 ci_error.log | sed -E               -e 's/(ghp_|github_pat_|sk-[a-zA-Z0-9_-]+)[a-zA-Z0-9_-]+/[REDACTED_TOKEN]/g'               -e 's/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/[REDACTED_EMAIL]/g'               -e 's/[0-9]{3}\.?[0-9]{3}\.?[0-9]{3}-?[0-9]{2}/[REDACTED_CPF]/g'               -e 's/(PASSWORD|SECRET|TOKEN|API_KEY|KEY)[[:space:]]*=[[:space:]]*[^[:space:]]+/\1=[REDACTED]/Ig'
+            echo '~~~'
+          } > issue_body.md
+          gh issue create \
+            --title "🚨 [CI Falhou] Commit ${{ github.sha }}" \
+            --body-file issue_body.md
+
+      - name: Auto-Fix with Codex & Open PR (SOMENTE sob ordem explicita do usuario)
+        if: failure() && github.event_name == 'workflow_dispatch' && inputs.autorizar_push_correcao == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY ausente nos Secrets; pulando auto-fix do Codex."
+            exit 0
+          fi
+          npm install -g @openai/codex
+          BRANCH="fix/auto-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          codex exec --approve-for-me "Leia ci_error.log e corrija a causa-raiz do erro nos arquivos do projeto."
+          rm -f ci_error.log issue_body.md
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "fix(ci): correcao automatica via Codex (run ${GITHUB_RUN_ID})"
+            git push -u origin "$BRANCH"
+            gh pr create \
+              --title "🤖 fix(ci): correção automática Codex (run ${GITHUB_RUN_ID})" \
+              --body "PR gerado automaticamente pelo Codex após falha no workflow."
+          fi

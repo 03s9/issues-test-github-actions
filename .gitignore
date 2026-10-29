@@ -1,0 +1,21 @@
+.DS_Store
+__pycache__/
+.venv/
+*.pyc
+
+# REDACTED_SECURITY_BLOCK (Zero Dados Sensiveis no Git/GitHub)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*secret*
+*credentials*
+perfil_chrome/
+state/
+*.sqlite
+*.sqlite3
+*.db
+ci_error.log
+issue_body.md
